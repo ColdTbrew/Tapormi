@@ -1,0 +1,251 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import json
+import time
+from typing import Any
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import uvicorn
+
+from .engine import EngineDecodeError, EngineUnavailableError, RealtimeAsrEngine, SessionState
+
+app = FastAPI(title="tapormi-worker", version="0.1.0")
+engine = RealtimeAsrEngine()
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+def _parse_message(raw: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid_json: {exc}") from exc
+    if not isinstance(payload, dict) or "type" not in payload:
+        raise ValueError("invalid_message: missing type")
+    return payload
+
+
+@app.websocket("/stt")
+async def stt_socket(ws: WebSocket) -> None:
+    await ws.accept()
+    ready_payload: dict[str, Any] = {
+        "type": "ready",
+        "model": engine.model_name,
+        "backend": engine.backend_name,
+        "warm": engine.warm,
+        "t_ms": int(time.time() * 1000),
+    }
+    if engine.warning:
+        ready_payload["warning"] = engine.warning
+    await ws.send_json(ready_payload)
+
+    sessions: dict[str, SessionState] = {}
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            msg = _parse_message(raw)
+            msg_type = msg["type"]
+            now = int(time.time() * 1000)
+
+            if msg_type == "session_start":
+                session_id = str(msg.get("session_id", ""))
+                if not session_id:
+                    await ws.send_json({"type": "error", "code": "missing_session_id", "t_ms": now})
+                    continue
+
+                raw_sample_rate = msg.get("sample_rate", 16000)
+                try:
+                    sample_rate = int(raw_sample_rate)
+                except (TypeError, ValueError):
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "invalid_sample_rate",
+                            "message": f"invalid sample_rate: {raw_sample_rate!r}",
+                            "t_ms": now,
+                        }
+                    )
+                    continue
+
+                language = str(msg.get("lang", "ko") or "ko")
+                try:
+                    sessions[session_id] = engine.start(
+                        session_id,
+                        sample_rate=sample_rate,
+                        language=language,
+                    )
+                except ValueError as exc:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "invalid_session_start",
+                            "message": str(exc),
+                            "t_ms": now,
+                        }
+                    )
+                except EngineUnavailableError as exc:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "engine_unavailable",
+                            "message": str(exc),
+                            "t_ms": now,
+                        }
+                    )
+                continue
+
+            if msg_type == "audio_chunk":
+                session_id = str(msg.get("session_id", ""))
+                state = sessions.get(session_id)
+                if state is None:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "unknown_session",
+                            "t_ms": now,
+                        }
+                    )
+                    continue
+                chunk_b64 = msg.get("pcm16_base64", "")
+                if not isinstance(chunk_b64, str) or not chunk_b64:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "missing_audio_chunk",
+                            "t_ms": now,
+                        }
+                    )
+                    continue
+                try:
+                    chunk = base64.b64decode(chunk_b64, validate=True)
+                except Exception:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "invalid_audio_chunk",
+                            "t_ms": now,
+                        }
+                    )
+                    continue
+
+                try:
+                    partial = await asyncio.to_thread(engine.push_chunk, state, chunk)
+                except EngineDecodeError as exc:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "decode_error",
+                            "message": str(exc),
+                            "t_ms": now,
+                        }
+                    )
+                    continue
+                except EngineUnavailableError as exc:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "engine_unavailable",
+                            "message": str(exc),
+                            "t_ms": now,
+                        }
+                    )
+                    continue
+
+                if partial:
+                    await ws.send_json(
+                        {
+                            "type": "partial",
+                            "session_id": session_id,
+                            "text": partial,
+                            "stability": 0.2,
+                            "t_ms": now,
+                        }
+                    )
+                continue
+
+            if msg_type == "session_stop":
+                session_id = str(msg.get("session_id", ""))
+                state = sessions.pop(session_id, None)
+                if state is None:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "unknown_session",
+                            "t_ms": now,
+                        }
+                    )
+                    continue
+
+                try:
+                    final_text = await asyncio.to_thread(engine.stop, state)
+                except EngineDecodeError as exc:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "decode_error",
+                            "message": str(exc),
+                            "t_ms": now,
+                        }
+                    )
+                    continue
+                except EngineUnavailableError as exc:
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "session_id": session_id,
+                            "code": "engine_unavailable",
+                            "message": str(exc),
+                            "t_ms": now,
+                        }
+                    )
+                    continue
+
+                await ws.send_json(
+                    {
+                        "type": "final",
+                        "session_id": session_id,
+                        "text": final_text,
+                        "t_ms": now,
+                    }
+                )
+                continue
+
+            if msg_type == "session_cancel":
+                session_id = str(msg.get("session_id", ""))
+                sessions.pop(session_id, None)
+                continue
+
+            await ws.send_json({"type": "error", "code": "unknown_type", "t_ms": now})
+
+    except WebSocketDisconnect:
+        return
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Tapormi realtime STT worker")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", default=8765, type=int)
+    args = parser.parse_args()
+
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()
