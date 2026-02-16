@@ -7,7 +7,7 @@ name = "tapormi-worker"
 version = "0.1.0"
 description = "Realtime STT worker for Tapormi"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14,<3.15"
 dependencies = [
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.30.0",

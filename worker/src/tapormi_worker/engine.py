@@ -186,7 +186,7 @@ class _MlxQwen3Backend(_EngineBackend):
     def __init__(self, *, model_id: str) -> None:
         if importlib.util.find_spec("mlx_audio") is None:
             raise EngineUnavailableError(
-                "mlx-audio is not installed. Run `uv sync --python 3.10` (Python>=3.10) to enable Qwen3."
+                "mlx-audio is not installed. Run `uv sync --python 3.14` (Python 3.14) to enable Qwen3."
             )
 
         self.model_name = model_id

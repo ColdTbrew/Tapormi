@@ -59,25 +59,23 @@ async def _lifespan(_: FastAPI):
     try:
         yield
     finally:
-        if _prewarm_task is None:
-            return
-        if _prewarm_task.done():
-            try:
-                _prewarm_task.result()
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-            except BaseException:
-                pass
+        if _prewarm_task is not None:
+            if _prewarm_task.done():
+                try:
+                    _prewarm_task.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+                except BaseException:
+                    pass
+            else:
+                _prewarm_task.cancel()
+                try:
+                    await _prewarm_task
+                except asyncio.CancelledError:
+                    pass
             _prewarm_task = None
-            return
-        _prewarm_task.cancel()
-        try:
-            await _prewarm_task
-        except asyncio.CancelledError:
-            pass
-        _prewarm_task = None
 
 
 app = FastAPI(title="tapormi-worker", version="0.1.0", lifespan=_lifespan)

@@ -23,7 +23,7 @@ Fn 키를 길게 눌러 실시간 받아쓰기를 하는 macOS 앱입니다.
 ## 빠른 시작 (워커)
 ```bash
 cd worker
-uv sync --python 3.10
+uv sync --python 3.14
 uv run python -m tapormi_worker.main --host 127.0.0.1 --port 8765
 ```
 
