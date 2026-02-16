@@ -115,6 +115,9 @@ class RealtimeAsrEngine:
     def stop(self, state: SessionState) -> str:
         return self._backend.stop(state)
 
+    def warmup(self) -> bool:
+        return self._backend.warmup()
+
 
 class _EngineBackend:
     name: str
@@ -134,6 +137,9 @@ class _EngineBackend:
         raise NotImplementedError
 
     def stop(self, state: SessionState) -> str:
+        raise NotImplementedError
+
+    def warmup(self) -> bool:
         raise NotImplementedError
 
 
@@ -169,6 +175,10 @@ class _MockBackend(_EngineBackend):
         seconds = state.bytes_received / (state.sample_rate * 2)
         return f"(mock) captured {seconds:.2f}s audio"
 
+    def warmup(self) -> bool:
+        self.warm = True
+        return True
+
 
 class _MlxQwen3Backend(_EngineBackend):
     name = "mlx_qwen3"
@@ -176,7 +186,7 @@ class _MlxQwen3Backend(_EngineBackend):
     def __init__(self, *, model_id: str) -> None:
         if importlib.util.find_spec("mlx_audio") is None:
             raise EngineUnavailableError(
-                "mlx-audio is not installed. Run `uv sync --python 3.14` (Python>=3.10) to enable Qwen3."
+                "mlx-audio is not installed. Run `uv sync --python 3.10` (Python>=3.10) to enable Qwen3."
             )
 
         self.model_name = model_id
@@ -237,6 +247,10 @@ class _MlxQwen3Backend(_EngineBackend):
             state.last_partial_text = text
             return text
         return state.last_partial_text
+
+    def warmup(self) -> bool:
+        self._ensure_model()
+        return self.warm
 
     def _transcribe(self, state: SessionState, *, stream: bool) -> str:
         model = self._ensure_model()

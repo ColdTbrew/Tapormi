@@ -23,7 +23,7 @@ Fn 키를 길게 눌러 실시간 받아쓰기를 하는 macOS 앱입니다.
 ## 빠른 시작 (워커)
 ```bash
 cd worker
-uv sync --python 3.14
+uv sync --python 3.10
 uv run python -m tapormi_worker.main --host 127.0.0.1 --port 8765
 ```
 
@@ -32,6 +32,10 @@ Qwen3 백엔드 강제 실행:
 cd worker
 TAPORMI_ASR_BACKEND=mlx_qwen3 uv run python -m tapormi_worker.main --host 127.0.0.1 --port 8765
 ```
+
+참고:
+- 기본적으로 워커 시작 시 Qwen3 prewarm을 백그라운드로 시도합니다.
+- 비활성화: `TAPORMI_PREWARM_ON_START=0`
 
 ## 프로토콜 요약
 - Client -> Worker

@@ -4,11 +4,12 @@ Tapormi macOS 앱과 통신하는 로컬 WebSocket STT 워커입니다.
 
 ## 실행
 ```bash
-uv sync --python 3.14
+uv sync --python 3.10
 uv run python -m tapormi_worker.main --host 127.0.0.1 --port 8765
 ```
 
 기본값은 `TAPORMI_ASR_BACKEND=auto`이며, `mlx-audio`가 없으면 자동으로 `mock` 백엔드로 폴백합니다.
+기본값은 시작 시 백그라운드 prewarm을 시도합니다. (환경변수 `TAPORMI_PREWARM_ON_START=0`으로 비활성화)
 
 ## Qwen3(mlx-audio) 활성화
 ```bash
@@ -20,10 +21,22 @@ uv run python -m tapormi_worker.main --host 127.0.0.1 --port 8765
 선택 환경변수:
 - `TAPORMI_PARTIAL_EVERY_CHUNKS` (기본 4)
 - `TAPORMI_MIN_PARTIAL_SECONDS` (기본 0.4)
+- `TAPORMI_PREWARM_ON_START` (기본 1, `0/false/no/off`면 비활성화)
 
 ## 엔드포인트
 - WebSocket: `ws://127.0.0.1:8765/stt`
 - Health: `http://127.0.0.1:8765/health`
+
+`/health` 응답 예시:
+```json
+{
+  "status": "ok",
+  "backend": "mlx_qwen3",
+  "model": "mlx-community/Qwen3-ASR-1.7B-8bit",
+  "warm": false,
+  "prewarm_in_progress": true
+}
+```
 
 ## 참고
 - 런타임 요구사항: Python `>=3.10`

@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 import json
+import logging
+import os
 import time
 from typing import Any
 
@@ -12,13 +15,88 @@ import uvicorn
 
 from .engine import EngineDecodeError, EngineUnavailableError, RealtimeAsrEngine, SessionState
 
-app = FastAPI(title="tapormi-worker", version="0.1.0")
 engine = RealtimeAsrEngine()
+logger = logging.getLogger("tapormi-worker")
+_prewarm_task: asyncio.Task[None] | None = None
+_prewarm_error: str | None = None
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _prewarm_in_progress() -> bool:
+    return _prewarm_task is not None and not _prewarm_task.done()
+
+
+async def _run_prewarm() -> None:
+    global _prewarm_error
+    try:
+        await asyncio.to_thread(engine.warmup)
+        _prewarm_error = None
+        logger.info("ASR engine prewarm completed (backend=%s)", engine.backend_name)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _prewarm_error = str(exc)
+        logger.exception("ASR engine prewarm failed: %s", exc)
+    except BaseException as exc:
+        _prewarm_error = str(exc)
+        logger.exception("ASR engine prewarm interrupted: %s", exc)
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    global _prewarm_task
+    should_prewarm = _env_bool(
+        "TAPORMI_PREWARM_ON_START",
+        default=(engine.backend_name != "mock"),
+    )
+    if should_prewarm:
+        _prewarm_task = asyncio.create_task(_run_prewarm())
+    try:
+        yield
+    finally:
+        if _prewarm_task is None:
+            return
+        if _prewarm_task.done():
+            try:
+                _prewarm_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            except BaseException:
+                pass
+            _prewarm_task = None
+            return
+        _prewarm_task.cancel()
+        try:
+            await _prewarm_task
+        except asyncio.CancelledError:
+            pass
+        _prewarm_task = None
+
+
+app = FastAPI(title="tapormi-worker", version="0.1.0", lifespan=_lifespan)
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "backend": engine.backend_name,
+        "model": engine.model_name,
+        "warm": engine.warm,
+        "prewarm_in_progress": _prewarm_in_progress(),
+    }
+    if engine.warning:
+        payload["warning"] = engine.warning
+    if _prewarm_error:
+        payload["prewarm_error"] = _prewarm_error
+    return payload
 
 
 def _parse_message(raw: str) -> dict[str, Any]:
@@ -39,10 +117,13 @@ async def stt_socket(ws: WebSocket) -> None:
         "model": engine.model_name,
         "backend": engine.backend_name,
         "warm": engine.warm,
+        "prewarm_in_progress": _prewarm_in_progress(),
         "t_ms": int(time.time() * 1000),
     }
     if engine.warning:
         ready_payload["warning"] = engine.warning
+    if _prewarm_error:
+        ready_payload["prewarm_error"] = _prewarm_error
     await ws.send_json(ready_payload)
 
     sessions: dict[str, SessionState] = {}

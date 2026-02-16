@@ -29,10 +29,12 @@
 
 ### ready
 ```json
-{"type":"ready","backend":"mlx_qwen3","model":"mlx-community/Qwen3-ASR-1.7B-8bit","warm":false,"t_ms":1739730000000}
+{"type":"ready","backend":"mlx_qwen3","model":"mlx-community/Qwen3-ASR-1.7B-8bit","warm":false,"prewarm_in_progress":true,"t_ms":1739730000000}
 ```
 
-`warning` 필드는 선택입니다. (`auto` 백엔드가 `mock`으로 폴백한 경우 포함)
+선택 필드:
+- `warning` (`auto` 백엔드가 `mock`으로 폴백한 경우 포함)
+- `prewarm_error` (백그라운드 prewarm 실패 시)
 
 ### partial
 ```json
